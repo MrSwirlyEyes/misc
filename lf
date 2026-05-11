@@ -1,359 +1,121 @@
-{
-  "id": "part-number-chroma-lookup",
-  "name": "Part Number \u2192 Model Lookup (Chroma)",
-  "description": "Takes a part number from user input, searches all ChromaDB collections (collection names = model names) hosted at localhost:8000, and returns the matching model name.",
-  "data": {
-    "nodes": [
-      {
-        "id": "ChatInput-001",
-        "type": "genericNode",
-        "position": {
-          "x": 80,
-          "y": 320
-        },
-        "data": {
-          "type": "ChatInput",
-          "id": "ChatInput-001",
-          "node": {
-            "display_name": "Chat Input",
-            "description": "Enter the part number you want to look up.",
-            "documentation": "",
-            "base_classes": [
-              "Message"
-            ],
-            "template": {
-              "_type": "Component",
-              "input_value": {
-                "name": "input_value",
-                "display_name": "Text",
-                "type": "str",
-                "value": "",
-                "show": true,
-                "required": false,
-                "placeholder": "Enter part number (e.g. ABC-1234)\u2026",
-                "info": "The part number to search for across Chroma collections."
-              },
-              "should_store_message": {
-                "name": "should_store_message",
-                "display_name": "Store Messages",
-                "type": "bool",
-                "value": true,
-                "show": true,
-                "required": false,
-                "info": ""
-              },
-              "sender": {
-                "name": "sender",
-                "display_name": "Sender Type",
-                "type": "str",
-                "value": "User",
-                "options": [
-                  "Machine",
-                  "User"
-                ],
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "sender_name": {
-                "name": "sender_name",
-                "display_name": "Sender Name",
-                "type": "str",
-                "value": "User",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "session_id": {
-                "name": "session_id",
-                "display_name": "Session ID",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "files": {
-                "name": "files",
-                "display_name": "Files",
-                "type": "file",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "background_color": {
-                "name": "background_color",
-                "display_name": "Background Color",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "chat_icon": {
-                "name": "chat_icon",
-                "display_name": "Icon",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "text_color": {
-                "name": "text_color",
-                "display_name": "Text Color",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              }
-            },
-            "outputs": [
-              {
-                "name": "message",
-                "display_name": "Message",
-                "types": [
-                  "Message"
-                ],
-                "selected": "Message",
-                "method": "message_response"
-              }
-            ]
-          }
-        }
-      },
-      {
-        "id": "CustomComponent-001",
-        "type": "genericNode",
-        "position": {
-          "x": 520,
-          "y": 220
-        },
-        "data": {
-          "type": "CustomComponent",
-          "id": "CustomComponent-001",
-          "node": {
-            "display_name": "Chroma Part Number Search",
-            "description": "Searches all ChromaDB collections for a part number and returns the model name (collection name).",
-            "documentation": "",
-            "base_classes": [
-              "Message"
-            ],
-            "template": {
-              "_type": "CustomComponent",
-              "code": {
-                "name": "code",
-                "display_name": "Code",
-                "type": "code",
-                "value": "from langflow.custom import Component\nfrom langflow.io import MessageInput, Output, StrInput\nfrom langflow.schema.message import Message\nimport chromadb\n\n\nclass ChromaPartNumberSearch(Component):\n    \"\"\"\n    Searches every collection in a ChromaDB server (localhost:8000 by default).\n    Collection names are treated as model names. Returns the model whose\n    collection contains the supplied part number.\n\n    Search strategy (attempted in order for each collection):\n      1. Get by document ID  \u2013 fastest; works when part numbers are stored as IDs.\n      2. Metadata filter     \u2013 works when part_number is a metadata field.\n      3. Document text match \u2013 fallback; works when the part number appears\n                               anywhere inside the document text.\n    \"\"\"\n\n    display_name: str = \"Chroma Part Number Search\"\n    description: str = \"Find the model (collection) that contains the given part number.\"\n    icon: str = \"database\"\n\n    inputs = [\n        MessageInput(\n            name=\"part_number_message\",\n            display_name=\"Part Number (Message)\",\n            info=\"Connect the Chat Input Message here.\",\n        ),\n        StrInput(\n            name=\"chroma_host\",\n            display_name=\"Chroma Host\",\n            value=\"localhost\",\n            info=\"Hostname of the ChromaDB server.\",\n            advanced=True,\n        ),\n        StrInput(\n            name=\"chroma_port\",\n            display_name=\"Chroma Port\",\n            value=\"8000\",\n            info=\"Port of the ChromaDB server.\",\n            advanced=True,\n        ),\n        StrInput(\n            name=\"metadata_key\",\n            display_name=\"Part Number Metadata Key\",\n            value=\"part_number\",\n            info=\"The metadata field name used to store part numbers (used in fallback search).\",\n            advanced=True,\n        ),\n    ]\n\n    outputs = [\n        Output(\n            display_name=\"Result Message\",\n            name=\"result_message\",\n            method=\"search_collections\",\n        ),\n    ]\n\n    # ------------------------------------------------------------------ #\n\n    def search_collections(self) -> Message:\n        # \u2500\u2500 1. Parse the incoming part number \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        raw = self.part_number_message\n        if hasattr(raw, \"text\"):\n            part_number = raw.text.strip()\n        else:\n            part_number = str(raw).strip()\n\n        if not part_number:\n            return Message(text=\"\u26a0\ufe0f  No part number supplied.\")\n\n        # \u2500\u2500 2. Connect to ChromaDB \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        try:\n            port = int(self.chroma_port)\n            client = chromadb.HttpClient(host=self.chroma_host, port=port)\n        except Exception as exc:\n            return Message(text=f\"\u274c  Could not connect to ChromaDB: {exc}\")\n\n        # \u2500\u2500 3. List all collections \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        try:\n            all_collections = client.list_collections()   # returns list[CollectionModel]\n        except Exception as exc:\n            return Message(text=f\"\u274c  Could not list collections: {exc}\")\n\n        if not all_collections:\n            return Message(text=\"\u26a0\ufe0f  No collections found in ChromaDB.\")\n\n        found_in: list[str] = []\n\n        for coll_meta in all_collections:\n            coll_name: str = coll_meta.name\n\n            try:\n                coll = client.get_collection(name=coll_name)\n            except Exception:\n                continue  # skip unreadable collections\n\n            # \u2500\u2500 Strategy 1: match by document ID \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            try:\n                result = coll.get(ids=[part_number], limit=1)\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n            # \u2500\u2500 Strategy 2: match via metadata field \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            try:\n                result = coll.get(\n                    where={self.metadata_key: {\"$eq\": part_number}},\n                    limit=1,\n                )\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n            # \u2500\u2500 Strategy 3: match inside document text \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            try:\n                result = coll.get(\n                    where_document={\"$contains\": part_number},\n                    limit=1,\n                )\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n        # \u2500\u2500 4. Build output \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        if not found_in:\n            return Message(\n                text=f\"\u274c  Part number '{part_number}' was not found in any collection.\"\n            )\n\n        if len(found_in) == 1:\n            return Message(\n                text=f\"\u2705  Part number '{part_number}' \u2192 Model: **{found_in[0]}**\"\n            )\n\n        models_list = \", \".join(found_in)\n        return Message(\n            text=(\n                f\"\u26a0\ufe0f  Part number '{part_number}' was found in multiple collections:\\n\"\n                f\"{models_list}\"\n            )\n        )\n",
-                "show": true,
-                "required": true,
-                "info": "Custom component code \u2014 do not edit unless you need to extend the search logic."
-              },
-              "part_number_message": {
-                "name": "part_number_message",
-                "display_name": "Part Number (Message)",
-                "type": "other",
-                "value": "",
-                "show": true,
-                "required": true,
-                "info": "Connect the Chat Input Message here."
-              },
-              "chroma_host": {
-                "name": "chroma_host",
-                "display_name": "Chroma Host",
-                "type": "str",
-                "value": "localhost",
-                "show": true,
-                "required": false,
-                "advanced": true,
-                "info": "Hostname of the ChromaDB server."
-              },
-              "chroma_port": {
-                "name": "chroma_port",
-                "display_name": "Chroma Port",
-                "type": "str",
-                "value": "8000",
-                "show": true,
-                "required": false,
-                "advanced": true,
-                "info": "Port of the ChromaDB server."
-              },
-              "metadata_key": {
-                "name": "metadata_key",
-                "display_name": "Part Number Metadata Key",
-                "type": "str",
-                "value": "part_number",
-                "show": true,
-                "required": false,
-                "advanced": true,
-                "info": "The metadata field name used to store part numbers."
-              }
-            },
-            "outputs": [
-              {
-                "name": "result_message",
-                "display_name": "Result Message",
-                "types": [
-                  "Message"
-                ],
-                "selected": "Message",
-                "method": "search_collections"
-              }
-            ]
-          }
-        }
-      },
-      {
-        "id": "ChatOutput-001",
-        "type": "genericNode",
-        "position": {
-          "x": 980,
-          "y": 320
-        },
-        "data": {
-          "type": "ChatOutput",
-          "id": "ChatOutput-001",
-          "node": {
-            "display_name": "Chat Output",
-            "description": "Display the model name result.",
-            "documentation": "",
-            "base_classes": [
-              "Message"
-            ],
-            "template": {
-              "_type": "Component",
-              "input_value": {
-                "name": "input_value",
-                "display_name": "Text",
-                "type": "str",
-                "value": "",
-                "show": true,
-                "required": false,
-                "info": ""
-              },
-              "should_store_message": {
-                "name": "should_store_message",
-                "display_name": "Store Messages",
-                "type": "bool",
-                "value": true,
-                "show": true,
-                "required": false,
-                "info": ""
-              },
-              "sender": {
-                "name": "sender",
-                "display_name": "Sender Type",
-                "type": "str",
-                "value": "Machine",
-                "options": [
-                  "Machine",
-                  "User"
-                ],
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "sender_name": {
-                "name": "sender_name",
-                "display_name": "Sender Name",
-                "type": "str",
-                "value": "AI",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "session_id": {
-                "name": "session_id",
-                "display_name": "Session ID",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "data_template": {
-                "name": "data_template",
-                "display_name": "Data Template",
-                "type": "str",
-                "value": "{text}",
-                "show": true,
-                "required": false,
-                "info": ""
-              },
-              "background_color": {
-                "name": "background_color",
-                "display_name": "Background Color",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "chat_icon": {
-                "name": "chat_icon",
-                "display_name": "Icon",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              },
-              "text_color": {
-                "name": "text_color",
-                "display_name": "Text Color",
-                "type": "str",
-                "value": "",
-                "show": false,
-                "required": false,
-                "info": ""
-              }
-            },
-            "outputs": [
-              {
-                "name": "message",
-                "display_name": "Message",
-                "types": [
-                  "Message"
-                ],
-                "selected": "Message",
-                "method": "message_response"
-              }
-            ]
-          }
-        }
-      }
-    ],
-    "edges": [
-      {
-        "id": "edge-ChatInput-001-CustomComponent-001",
-        "source": "ChatInput-001",
-        "target": "CustomComponent-001",
-        "sourceHandle": "{\"dataType\": \"ChatInput\", \"id\": \"ChatInput-001\", \"name\": \"message\", \"output_types\": [\"Message\"]}",
-        "targetHandle": "{\"fieldName\": \"part_number_message\", \"id\": \"CustomComponent-001\", \"inputTypes\": [\"Message\"], \"type\": \"other\"}",
-        "data": {
-          "sourceHandle": "{\"dataType\": \"ChatInput\", \"id\": \"ChatInput-001\", \"name\": \"message\", \"output_types\": [\"Message\"]}",
-          "targetHandle": "{\"fieldName\": \"part_number_message\", \"id\": \"CustomComponent-001\", \"inputTypes\": [\"Message\"], \"type\": \"other\"}"
-        }
-      },
-      {
-        "id": "edge-CustomComponent-001-ChatOutput-001",
-        "source": "CustomComponent-001",
-        "target": "ChatOutput-001",
-        "sourceHandle": "{\"dataType\": \"CustomComponent\", \"id\": \"CustomComponent-001\", \"name\": \"result_message\", \"output_types\": [\"Message\"]}",
-        "targetHandle": "{\"fieldName\": \"input_value\", \"id\": \"ChatOutput-001\", \"inputTypes\": [\"Message\"], \"type\": \"str\"}",
-        "data": {
-          "sourceHandle": "{\"dataType\": \"CustomComponent\", \"id\": \"CustomComponent-001\", \"name\": \"result_message\", \"output_types\": [\"Message\"]}",
-          "targetHandle": "{\"fieldName\": \"input_value\", \"id\": \"ChatOutput-001\", \"inputTypes\": [\"Message\"], \"type\": \"str\"}"
-        }
-      }
-    ],
-    "viewport": {
-      "zoom": 0.85,
-      "x": 0,
-      "y": 0
-    }
-  }
-}
+from langflow.custom import Component
+from langflow.io import MessageInput, Output, StrInput
+from langflow.schema.message import Message
+import chromadb
+
+
+class ChromaPartNumberSearch(Component):
+    display_name = "Chroma Part Number Search"
+    description = "Find the model (collection name) that contains the given part number."
+    icon = "database"
+
+    inputs = [
+        MessageInput(
+            name="part_number_message",
+            display_name="Part Number",
+            info="Connect Chat Input here.",
+        ),
+        StrInput(
+            name="chroma_host",
+            display_name="Chroma Host",
+            value="localhost",
+            advanced=True,
+        ),
+        StrInput(
+            name="chroma_port",
+            display_name="Chroma Port",
+            value="8000",
+            advanced=True,
+        ),
+        StrInput(
+            name="metadata_key",
+            display_name="Part Number Metadata Key",
+            value="part_number",
+            info="Metadata field name storing part numbers (used as fallback).",
+            advanced=True,
+        ),
+    ]
+
+    outputs = [
+        Output(
+            display_name="Result",
+            name="result_message",
+            method="search_collections",
+        ),
+    ]
+
+    def search_collections(self) -> Message:
+        # Parse part number from incoming message
+        raw = self.part_number_message
+        part_number = (raw.text if hasattr(raw, "text") else str(raw)).strip()
+
+        if not part_number:
+            return Message(text="⚠️ No part number supplied.")
+
+        # Connect to ChromaDB
+        try:
+            client = chromadb.HttpClient(
+                host=self.chroma_host,
+                port=int(self.chroma_port)
+            )
+        except Exception as exc:
+            return Message(text=f"❌ Could not connect to ChromaDB: {exc}")
+
+        # List all collections
+        try:
+            collections = client.list_collections()
+        except Exception as exc:
+            return Message(text=f"❌ Could not list collections: {exc}")
+
+        if not collections:
+            return Message(text="⚠️ No collections found in ChromaDB.")
+
+        found_in = []
+
+        for coll_meta in collections:
+            name = coll_meta.name
+            try:
+                coll = client.get_collection(name=name)
+            except Exception:
+                continue
+
+            # Strategy 1: part number stored as document ID
+            try:
+                if coll.get(ids=[part_number]).get("ids"):
+                    found_in.append(name)
+                    continue
+            except Exception:
+                pass
+
+            # Strategy 2: part number stored as metadata field
+            try:
+                if coll.get(
+                    where={self.metadata_key: {"$eq": part_number}}, limit=1
+                ).get("ids"):
+                    found_in.append(name)
+                    continue
+            except Exception:
+                pass
+
+            # Strategy 3: part number appears in document text
+            try:
+                if coll.get(
+                    where_document={"$contains": part_number}, limit=1
+                ).get("ids"):
+                    found_in.append(name)
+                    continue
+            except Exception:
+                pass
+
+        # Return result
+        if not found_in:
+            return Message(
+                text=f"❌ Part number '{part_number}' not found in any collection."
+            )
+        if len(found_in) == 1:
+            return Message(
+                text=f"✅ Part number '{part_number}' → Model: {found_in[0]}"
+            )
+        return Message(
+            text=f"⚠️ Found in multiple models: {', '.join(found_in)}"
+        )
