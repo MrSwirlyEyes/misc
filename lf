@@ -45,30 +45,27 @@ class ChromaPartNumberSearch(Component):
     ]
 
     def search_collections(self) -> Message:
-        # Parse part number from incoming message
         raw = self.part_number_message
         part_number = (raw.text if hasattr(raw, "text") else str(raw)).strip()
 
         if not part_number:
-            return Message(text="⚠️ No part number supplied.")
+            return Message(text="No part number supplied.")
 
-        # Connect to ChromaDB
         try:
             client = chromadb.HttpClient(
                 host=self.chroma_host,
                 port=int(self.chroma_port)
             )
         except Exception as exc:
-            return Message(text=f"❌ Could not connect to ChromaDB: {exc}")
+            return Message(text=f"Could not connect to ChromaDB: {exc}")
 
-        # List all collections
         try:
             collections = client.list_collections()
         except Exception as exc:
-            return Message(text=f"❌ Could not list collections: {exc}")
+            return Message(text=f"Could not list collections: {exc}")
 
         if not collections:
-            return Message(text="⚠️ No collections found in ChromaDB.")
+            return Message(text="No collections found in ChromaDB.")
 
         found_in = []
 
@@ -107,15 +104,8 @@ class ChromaPartNumberSearch(Component):
             except Exception:
                 pass
 
-        # Return result
         if not found_in:
-            return Message(
-                text=f"❌ Part number '{part_number}' not found in any collection."
-            )
+            return Message(text=f"Part number '{part_number}' not found in any collection.")
         if len(found_in) == 1:
-            return Message(
-                text=f"✅ Part number '{part_number}' → Model: {found_in[0]}"
-            )
-        return Message(
-            text=f"⚠️ Found in multiple models: {', '.join(found_in)}"
-        )
+            return Message(text=f"Part number '{part_number}' -> Model: {found_in[0]}")
+        return Message(text=f"Found in multiple models: {', '.join(found_in)}")
