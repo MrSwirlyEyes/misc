@@ -1,13 +1,16 @@
 {
   "id": "part-number-chroma-lookup",
-  "name": "Part Number → Model Lookup (Chroma)",
+  "name": "Part Number \u2192 Model Lookup (Chroma)",
   "description": "Takes a part number from user input, searches all ChromaDB collections (collection names = model names) hosted at localhost:8000, and returns the matching model name.",
   "data": {
     "nodes": [
       {
         "id": "ChatInput-001",
         "type": "genericNode",
-        "position": { "x": 80, "y": 320 },
+        "position": {
+          "x": 80,
+          "y": 320
+        },
         "data": {
           "type": "ChatInput",
           "id": "ChatInput-001",
@@ -15,7 +18,9 @@
             "display_name": "Chat Input",
             "description": "Enter the part number you want to look up.",
             "documentation": "",
-            "base_classes": ["Message"],
+            "base_classes": [
+              "Message"
+            ],
             "template": {
               "_type": "Component",
               "input_value": {
@@ -25,7 +30,7 @@
                 "value": "",
                 "show": true,
                 "required": false,
-                "placeholder": "Enter part number (e.g. ABC-1234)…",
+                "placeholder": "Enter part number (e.g. ABC-1234)\u2026",
                 "info": "The part number to search for across Chroma collections."
               },
               "should_store_message": {
@@ -42,7 +47,10 @@
                 "display_name": "Sender Type",
                 "type": "str",
                 "value": "User",
-                "options": ["Machine", "User"],
+                "options": [
+                  "Machine",
+                  "User"
+                ],
                 "show": false,
                 "required": false,
                 "info": ""
@@ -106,7 +114,9 @@
               {
                 "name": "message",
                 "display_name": "Message",
-                "types": ["Message"],
+                "types": [
+                  "Message"
+                ],
                 "selected": "Message",
                 "method": "message_response"
               }
@@ -117,7 +127,10 @@
       {
         "id": "CustomComponent-001",
         "type": "genericNode",
-        "position": { "x": 520, "y": 220 },
+        "position": {
+          "x": 520,
+          "y": 220
+        },
         "data": {
           "type": "CustomComponent",
           "id": "CustomComponent-001",
@@ -125,17 +138,19 @@
             "display_name": "Chroma Part Number Search",
             "description": "Searches all ChromaDB collections for a part number and returns the model name (collection name).",
             "documentation": "",
-            "base_classes": ["Message"],
+            "base_classes": [
+              "Message"
+            ],
             "template": {
               "_type": "CustomComponent",
               "code": {
                 "name": "code",
                 "display_name": "Code",
                 "type": "code",
-                "value": "from langflow.custom import Component\nfrom langflow.io import MessageInput, Output, StrInput\nfrom langflow.schema.message import Message\nimport chromadb\n\n\nclass ChromaPartNumberSearch(Component):\n    \"\"\"\n    Searches every collection in a ChromaDB server (localhost:8000 by default).\n    Collection names are treated as model names. Returns the model whose\n    collection contains the supplied part number.\n\n    Search strategy (attempted in order for each collection):\n      1. Get by document ID  – fastest; works when part numbers are stored as IDs.\n      2. Metadata filter     – works when part_number is a metadata field.\n      3. Document text match – fallback; works when the part number appears\n                               anywhere inside the document text.\n    \"\"\"\n\n    display_name: str = \"Chroma Part Number Search\"\n    description: str = \"Find the model (collection) that contains the given part number.\"\n    icon: str = \"database\"\n\n    inputs = [\n        MessageInput(\n            name=\"part_number_message\",\n            display_name=\"Part Number (Message)\",\n            info=\"Connect the Chat Input Message here.\",\n        ),\n        StrInput(\n            name=\"chroma_host\",\n            display_name=\"Chroma Host\",\n            value=\"localhost\",\n            info=\"Hostname of the ChromaDB server.\",\n            advanced=True,\n        ),\n        StrInput(\n            name=\"chroma_port\",\n            display_name=\"Chroma Port\",\n            value=\"8000\",\n            info=\"Port of the ChromaDB server.\",\n            advanced=True,\n        ),\n        StrInput(\n            name=\"metadata_key\",\n            display_name=\"Part Number Metadata Key\",\n            value=\"part_number\",\n            info=\"The metadata field name used to store part numbers (used in fallback search).\",\n            advanced=True,\n        ),\n    ]\n\n    outputs = [\n        Output(\n            display_name=\"Result Message\",\n            name=\"result_message\",\n            method=\"search_collections\",\n        ),\n    ]\n\n    # ------------------------------------------------------------------ #\n\n    def search_collections(self) -> Message:\n        # ── 1. Parse the incoming part number ──────────────────────────\n        raw = self.part_number_message\n        if hasattr(raw, \"text\"):\n            part_number = raw.text.strip()\n        else:\n            part_number = str(raw).strip()\n\n        if not part_number:\n            return Message(text=\"⚠️  No part number supplied.\")\n\n        # ── 2. Connect to ChromaDB ──────────────────────────────────────\n        try:\n            port = int(self.chroma_port)\n            client = chromadb.HttpClient(host=self.chroma_host, port=port)\n        except Exception as exc:\n            return Message(text=f\"❌  Could not connect to ChromaDB: {exc}\")\n\n        # ── 3. List all collections ─────────────────────────────────────\n        try:\n            all_collections = client.list_collections()   # returns list[CollectionModel]\n        except Exception as exc:\n            return Message(text=f\"❌  Could not list collections: {exc}\")\n\n        if not all_collections:\n            return Message(text=\"⚠️  No collections found in ChromaDB.\")\n\n        found_in: list[str] = []\n\n        for coll_meta in all_collections:\n            coll_name: str = coll_meta.name\n\n            try:\n                coll = client.get_collection(name=coll_name)\n            except Exception:\n                continue  # skip unreadable collections\n\n            # ── Strategy 1: match by document ID ───────────────────────\n            try:\n                result = coll.get(ids=[part_number], limit=1)\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n            # ── Strategy 2: match via metadata field ────────────────────\n            try:\n                result = coll.get(\n                    where={self.metadata_key: {\"$eq\": part_number}},\n                    limit=1,\n                )\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n            # ── Strategy 3: match inside document text ──────────────────\n            try:\n                result = coll.get(\n                    where_document={\"$contains\": part_number},\n                    limit=1,\n                )\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n        # ── 4. Build output ─────────────────────────────────────────────\n        if not found_in:\n            return Message(\n                text=f\"❌  Part number '{part_number}' was not found in any collection.\"\n            )\n\n        if len(found_in) == 1:\n            return Message(\n                text=f\"✅  Part number '{part_number}' → Model: **{found_in[0]}**\"\n            )\n\n        models_list = \", \".join(found_in)\n        return Message(\n            text=(\n                f\"⚠️  Part number '{part_number}' was found in multiple collections:\\n\"\n                f\"{models_list}\"\n            )\n        )\n",
+                "value": "from langflow.custom import Component\nfrom langflow.io import MessageInput, Output, StrInput\nfrom langflow.schema.message import Message\nimport chromadb\n\n\nclass ChromaPartNumberSearch(Component):\n    \"\"\"\n    Searches every collection in a ChromaDB server (localhost:8000 by default).\n    Collection names are treated as model names. Returns the model whose\n    collection contains the supplied part number.\n\n    Search strategy (attempted in order for each collection):\n      1. Get by document ID  \u2013 fastest; works when part numbers are stored as IDs.\n      2. Metadata filter     \u2013 works when part_number is a metadata field.\n      3. Document text match \u2013 fallback; works when the part number appears\n                               anywhere inside the document text.\n    \"\"\"\n\n    display_name: str = \"Chroma Part Number Search\"\n    description: str = \"Find the model (collection) that contains the given part number.\"\n    icon: str = \"database\"\n\n    inputs = [\n        MessageInput(\n            name=\"part_number_message\",\n            display_name=\"Part Number (Message)\",\n            info=\"Connect the Chat Input Message here.\",\n        ),\n        StrInput(\n            name=\"chroma_host\",\n            display_name=\"Chroma Host\",\n            value=\"localhost\",\n            info=\"Hostname of the ChromaDB server.\",\n            advanced=True,\n        ),\n        StrInput(\n            name=\"chroma_port\",\n            display_name=\"Chroma Port\",\n            value=\"8000\",\n            info=\"Port of the ChromaDB server.\",\n            advanced=True,\n        ),\n        StrInput(\n            name=\"metadata_key\",\n            display_name=\"Part Number Metadata Key\",\n            value=\"part_number\",\n            info=\"The metadata field name used to store part numbers (used in fallback search).\",\n            advanced=True,\n        ),\n    ]\n\n    outputs = [\n        Output(\n            display_name=\"Result Message\",\n            name=\"result_message\",\n            method=\"search_collections\",\n        ),\n    ]\n\n    # ------------------------------------------------------------------ #\n\n    def search_collections(self) -> Message:\n        # \u2500\u2500 1. Parse the incoming part number \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        raw = self.part_number_message\n        if hasattr(raw, \"text\"):\n            part_number = raw.text.strip()\n        else:\n            part_number = str(raw).strip()\n\n        if not part_number:\n            return Message(text=\"\u26a0\ufe0f  No part number supplied.\")\n\n        # \u2500\u2500 2. Connect to ChromaDB \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        try:\n            port = int(self.chroma_port)\n            client = chromadb.HttpClient(host=self.chroma_host, port=port)\n        except Exception as exc:\n            return Message(text=f\"\u274c  Could not connect to ChromaDB: {exc}\")\n\n        # \u2500\u2500 3. List all collections \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        try:\n            all_collections = client.list_collections()   # returns list[CollectionModel]\n        except Exception as exc:\n            return Message(text=f\"\u274c  Could not list collections: {exc}\")\n\n        if not all_collections:\n            return Message(text=\"\u26a0\ufe0f  No collections found in ChromaDB.\")\n\n        found_in: list[str] = []\n\n        for coll_meta in all_collections:\n            coll_name: str = coll_meta.name\n\n            try:\n                coll = client.get_collection(name=coll_name)\n            except Exception:\n                continue  # skip unreadable collections\n\n            # \u2500\u2500 Strategy 1: match by document ID \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            try:\n                result = coll.get(ids=[part_number], limit=1)\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n            # \u2500\u2500 Strategy 2: match via metadata field \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            try:\n                result = coll.get(\n                    where={self.metadata_key: {\"$eq\": part_number}},\n                    limit=1,\n                )\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n            # \u2500\u2500 Strategy 3: match inside document text \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n            try:\n                result = coll.get(\n                    where_document={\"$contains\": part_number},\n                    limit=1,\n                )\n                if result.get(\"ids\"):\n                    found_in.append(coll_name)\n                    continue\n            except Exception:\n                pass\n\n        # \u2500\u2500 4. Build output \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n        if not found_in:\n            return Message(\n                text=f\"\u274c  Part number '{part_number}' was not found in any collection.\"\n            )\n\n        if len(found_in) == 1:\n            return Message(\n                text=f\"\u2705  Part number '{part_number}' \u2192 Model: **{found_in[0]}**\"\n            )\n\n        models_list = \", \".join(found_in)\n        return Message(\n            text=(\n                f\"\u26a0\ufe0f  Part number '{part_number}' was found in multiple collections:\\n\"\n                f\"{models_list}\"\n            )\n        )\n",
                 "show": true,
                 "required": true,
-                "info": "Custom component code — do not edit unless you need to extend the search logic."
+                "info": "Custom component code \u2014 do not edit unless you need to extend the search logic."
               },
               "part_number_message": {
                 "name": "part_number_message",
@@ -181,7 +196,9 @@
               {
                 "name": "result_message",
                 "display_name": "Result Message",
-                "types": ["Message"],
+                "types": [
+                  "Message"
+                ],
                 "selected": "Message",
                 "method": "search_collections"
               }
@@ -192,7 +209,10 @@
       {
         "id": "ChatOutput-001",
         "type": "genericNode",
-        "position": { "x": 980, "y": 320 },
+        "position": {
+          "x": 980,
+          "y": 320
+        },
         "data": {
           "type": "ChatOutput",
           "id": "ChatOutput-001",
@@ -200,7 +220,9 @@
             "display_name": "Chat Output",
             "description": "Display the model name result.",
             "documentation": "",
-            "base_classes": ["Message"],
+            "base_classes": [
+              "Message"
+            ],
             "template": {
               "_type": "Component",
               "input_value": {
@@ -226,7 +248,10 @@
                 "display_name": "Sender Type",
                 "type": "str",
                 "value": "Machine",
-                "options": ["Machine", "User"],
+                "options": [
+                  "Machine",
+                  "User"
+                ],
                 "show": false,
                 "required": false,
                 "info": ""
@@ -290,7 +315,9 @@
               {
                 "name": "message",
                 "display_name": "Message",
-                "types": ["Message"],
+                "types": [
+                  "Message"
+                ],
                 "selected": "Message",
                 "method": "message_response"
               }
@@ -304,62 +331,22 @@
         "id": "edge-ChatInput-001-CustomComponent-001",
         "source": "ChatInput-001",
         "target": "CustomComponent-001",
-        "sourceHandle": {
-          "dataType": "ChatInput",
-          "id": "ChatInput-001",
-          "name": "message",
-          "output_types": ["Message"]
-        },
-        "targetHandle": {
-          "fieldName": "part_number_message",
-          "id": "CustomComponent-001",
-          "inputTypes": ["Message"],
-          "type": "other"
-        },
+        "sourceHandle": "{\"dataType\": \"ChatInput\", \"id\": \"ChatInput-001\", \"name\": \"message\", \"output_types\": [\"Message\"]}",
+        "targetHandle": "{\"fieldName\": \"part_number_message\", \"id\": \"CustomComponent-001\", \"inputTypes\": [\"Message\"], \"type\": \"other\"}",
         "data": {
-          "sourceHandle": {
-            "dataType": "ChatInput",
-            "id": "ChatInput-001",
-            "name": "message",
-            "output_types": ["Message"]
-          },
-          "targetHandle": {
-            "fieldName": "part_number_message",
-            "id": "CustomComponent-001",
-            "inputTypes": ["Message"],
-            "type": "other"
-          }
+          "sourceHandle": "{\"dataType\": \"ChatInput\", \"id\": \"ChatInput-001\", \"name\": \"message\", \"output_types\": [\"Message\"]}",
+          "targetHandle": "{\"fieldName\": \"part_number_message\", \"id\": \"CustomComponent-001\", \"inputTypes\": [\"Message\"], \"type\": \"other\"}"
         }
       },
       {
         "id": "edge-CustomComponent-001-ChatOutput-001",
         "source": "CustomComponent-001",
         "target": "ChatOutput-001",
-        "sourceHandle": {
-          "dataType": "CustomComponent",
-          "id": "CustomComponent-001",
-          "name": "result_message",
-          "output_types": ["Message"]
-        },
-        "targetHandle": {
-          "fieldName": "input_value",
-          "id": "ChatOutput-001",
-          "inputTypes": ["Message"],
-          "type": "str"
-        },
+        "sourceHandle": "{\"dataType\": \"CustomComponent\", \"id\": \"CustomComponent-001\", \"name\": \"result_message\", \"output_types\": [\"Message\"]}",
+        "targetHandle": "{\"fieldName\": \"input_value\", \"id\": \"ChatOutput-001\", \"inputTypes\": [\"Message\"], \"type\": \"str\"}",
         "data": {
-          "sourceHandle": {
-            "dataType": "CustomComponent",
-            "id": "CustomComponent-001",
-            "name": "result_message",
-            "output_types": ["Message"]
-          },
-          "targetHandle": {
-            "fieldName": "input_value",
-            "id": "ChatOutput-001",
-            "inputTypes": ["Message"],
-            "type": "str"
-          }
+          "sourceHandle": "{\"dataType\": \"CustomComponent\", \"id\": \"CustomComponent-001\", \"name\": \"result_message\", \"output_types\": [\"Message\"]}",
+          "targetHandle": "{\"fieldName\": \"input_value\", \"id\": \"ChatOutput-001\", \"inputTypes\": [\"Message\"], \"type\": \"str\"}"
         }
       }
     ],
