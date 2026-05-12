@@ -1,0 +1,48 @@
+-- ============================================================
+-- emailType
+-- Catalog of all notification types the system can send.
+--
+-- Adding a new type requires ALL of the following:
+--   1. Add the new typeKey string to CHK_emailType_typeKey below
+--   2. Run the ALTER TABLE against the database (DBA)
+--   3. Add a row via the seed script
+--   4. Add the key constant to /config/constants.js
+--
+-- isActive = 0 suppresses sending without removing the type.
+-- ============================================================
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.tables
+    WHERE  name      = 'emailType'
+    AND    schema_id = SCHEMA_ID('dbo')
+)
+BEGIN
+
+    CREATE TABLE dbo.emailType (
+        emailTypeId  INT          IDENTITY(1,1) NOT NULL,
+        typeKey      VARCHAR(100)               NOT NULL,
+        description  VARCHAR(500)                   NULL,
+        isActive     BIT                        NOT NULL  CONSTRAINT DF_emailType_isActive  DEFAULT 1,
+        createdAt    DATETIME2(7)               NOT NULL  CONSTRAINT DF_emailType_createdAt DEFAULT GETUTCDATE(),
+
+        CONSTRAINT PK_emailType          PRIMARY KEY CLUSTERED   (emailTypeId),
+        CONSTRAINT UQ_emailType_typeKey  UNIQUE      NONCLUSTERED (typeKey),
+
+        -- Whitelist of valid type keys.  Update this constraint when adding new types.
+        CONSTRAINT CHK_emailType_typeKey CHECK (typeKey IN (
+            'ticket.ticket.opened',
+            'ticket.ticket.updated',
+            'ticket.ticket.closed',
+            'ticket.ticket.reminder',
+            'reporting.ticket.mtbf_summary',
+            'reporting.ticket.weekly_digest'
+        ))
+    );
+
+    PRINT 'Created table: dbo.emailType';
+END
+ELSE
+BEGIN
+    PRINT 'Table already exists, skipping: dbo.emailType';
+END
+GO
