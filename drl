@@ -1,0 +1,206 @@
+"""
+oracle/dr_lookup.py
+--------------------
+Query Oracle for Discrepancy Reports (DRs) filtered by module name and a
+lookback window, returned as a pandas DataFrame.
+
+Follows the same OracleBaseDatabaseModule pattern used throughout this project.
+No `from __future__ import annotations`, no `typing` imports — Python 3.12 native.
+
+Usage (standalone)
+------------------
+    python dr_lookup.py --module "MODULE_NAME" --days 30 --max 500
+
+Usage (imported)
+----------------
+    from oracle.dr_lookup import DRLookup
+    from oracle.driver.oracle_connection import OracleConnectionConfig
+
+    config = OracleConnectionConfig(
+        host="your-host",
+        service_name="your-service",
+        username="your-user",
+        password="your-password",
+    )
+    with DRLookup(config) as db:
+        df = db.get_drs_by_module(module_name="MODULE_NAME", days_back=30, max_results=500)
+        print(df)
+"""
+
+import argparse
+import logging
+import os
+
+import pandas as pd
+from dotenv import load_dotenv
+
+from oracle.driver.oracle_base_database import OracleBaseDatabaseModule
+from oracle.driver.oracle_connection import OracleConnection, OracleConnectionConfig
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# IMPORTANT: replace this with your actual Oracle view/table name.
+# In the existing project this is the same source used in wo_database.py.
+# ---------------------------------------------------------------------------
+_DR_TABLE = "YOUR_SCHEMA.YOUR_DR_TABLE"
+
+_DR_QUERY = f"""
+    SELECT
+        order_no,
+        order_type,
+        order_start_date,
+        order_end_date,
+        part_no,
+        module_description,
+        module_name,
+        module_assy_level,
+        program,
+        module_serial_num,
+        dr_id,
+        dr_title,
+        dr_type,
+        dr_defect_code,
+        dr_notes,
+        dr_text_timestamp,
+        dr_text_1,
+        dr_text_2,
+        dr_text_3,
+        dr_text_4,
+        dr_text_5
+    FROM
+        {_DR_TABLE}
+    WHERE
+        module_name    = :1
+        AND order_start_date >= SYSDATE - :2
+    ORDER BY
+        module_name,
+        part_no,
+        order_no,
+        dr_id,
+        dr_text_timestamp
+    FETCH FIRST :3 ROWS ONLY
+"""
+
+
+class DRLookup(OracleBaseDatabaseModule):
+    """
+    Fetches Discrepancy Reports from Oracle filtered by module name,
+    lookback window, and a hard result cap.
+
+    Inherits connection management from OracleBaseDatabaseModule — use as
+    a context manager or call connect()/disconnect() manually.
+    """
+
+    def get_drs_by_module(
+        self,
+        module_name: str,
+        days_back: int,
+        max_results: int,
+    ) -> pd.DataFrame:
+        """
+        Return DRs for a given module as a pandas DataFrame.
+
+        Parameters
+        ----------
+        module_name : str
+            Exact value to match against the module_name column.
+        days_back : int
+            How many calendar days to look back from today.
+            Translates to: order_start_date >= SYSDATE - days_back
+        max_results : int
+            Hard cap on the number of rows returned (FETCH FIRST n ROWS ONLY).
+
+        Returns
+        -------
+        pd.DataFrame
+            All matching DR rows.  Empty DataFrame if nothing is found.
+            Column names are lowercased to match the rest of the project.
+        """
+        if days_back < 1:
+            raise ValueError(f"days_back must be >= 1, got {days_back}")
+        if max_results < 1:
+            raise ValueError(f"max_results must be >= 1, got {max_results}")
+
+        logger.info(
+            "Querying DRs for module='%s', days_back=%d, max_results=%d",
+            module_name,
+            days_back,
+            max_results,
+        )
+
+        rows = self._fetchall(_DR_QUERY, (module_name, days_back, max_results))
+
+        if not rows:
+            logger.warning(
+                "No DRs found for module='%s' within the last %d days.",
+                module_name,
+                days_back,
+            )
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows)
+
+        # Coerce date columns to pandas datetime — already datetime objects
+        # from oracledb but this makes them proper pd.Timestamp / NaT.
+        for col in ("order_start_date", "order_end_date", "dr_text_timestamp"):
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+
+        logger.info("Returned %d DR rows for module='%s'.", len(df), module_name)
+        return df
+
+
+# ---------------------------------------------------------------------------
+# Standalone entry point
+# ---------------------------------------------------------------------------
+
+def _build_config_from_env() -> OracleConnectionConfig:
+    """Load Oracle connection config from .env (same keys as the rest of the project)."""
+    load_dotenv()
+    return OracleConnectionConfig(
+        host=os.environ["ORACLE_HOST"],
+        service_name=os.environ["ORACLE_SERVICE_NAME"],
+        username=os.environ["ORACLE_USER"],
+        password=os.environ["ORACLE_PASSWORD"],
+        port=int(os.getenv("ORACLE_PORT", "1521")),
+    )
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Fetch Discrepancy Reports from Oracle for a given module."
+    )
+    parser.add_argument("--module", required=True, help="Module name to filter on.")
+    parser.add_argument(
+        "--days", type=int, default=30, help="Number of days to look back (default: 30)."
+    )
+    parser.add_argument(
+        "--max", type=int, default=1000, help="Max rows to return (default: 1000)."
+    )
+    args = parser.parse_args()
+
+    config = _build_config_from_env()
+
+    with DRLookup(config) as db:
+        df = db.get_drs_by_module(
+            module_name=args.module,
+            days_back=args.days,
+            max_results=args.max,
+        )
+
+    if df.empty:
+        print("No results found.")
+        return
+
+    print(df.to_string(index=False))
+    print(f"\n{len(df)} rows returned.")
+
+
+if __name__ == "__main__":
+    main()
