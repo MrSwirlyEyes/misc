@@ -1,0 +1,137 @@
+# DR Lookup
+
+Queries Oracle for Discrepancy Reports (DRs) filtered by module name, lookback window, and a maximum row cap. Returns results as a `pandas.DataFrame`.
+
+Follows the same `OracleBaseDatabaseModule` pattern used throughout the project — the connection layer, `.env` keys, column naming, and query ordering are all consistent with `wo_database.py`.
+
+---
+
+## Requirements
+
+```bash
+pip install oracledb pandas python-dotenv
+```
+
+---
+
+## Configuration
+
+Uses the same `.env` file as the rest of the project. No new keys are required.
+
+| Key | Description |
+|---|---|
+| `ORACLE_HOST` | Oracle server hostname |
+| `ORACLE_SERVICE_NAME` | Oracle service name |
+| `ORACLE_USER` | Oracle username |
+| `ORACLE_PASSWORD` | Oracle password |
+| `ORACLE_PORT` | Oracle port — defaults to `1521` if not set |
+
+---
+
+## Setup
+
+Before running, set the actual Oracle table/view name at the top of `dr_lookup.py`:
+
+```python
+_DR_TABLE = "YOUR_SCHEMA.YOUR_DR_TABLE"
+```
+
+This should be the same table used in `wo_database.py`.
+
+---
+
+## Usage
+
+### As a module (imported)
+
+```python
+from oracle.dr_lookup import DRLookup
+from oracle.driver.oracle_connection import OracleConnectionConfig
+
+config = OracleConnectionConfig(
+    host="your-host",
+    service_name="your-service",
+    username="your-user",
+    password="your-password",
+)
+
+with DRLookup(config) as db:
+    df = db.get_drs_by_module(
+        module_name="MODULE_NAME",
+        days_back=30,
+        max_results=500,
+    )
+
+print(df)
+```
+
+### From the command line (standalone)
+
+```bash
+python dr_lookup.py --module "MODULE_NAME" --days 30 --max 500
+```
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--module` | Yes | — | Exact module name to filter on |
+| `--days` | No | `30` | Number of calendar days to look back |
+| `--max` | No | `1000` | Hard cap on rows returned |
+
+---
+
+## Columns Returned
+
+All column names are lowercased, consistent with the rest of the project.
+
+| Column | Type | Notes |
+|---|---|---|
+| `order_no` | str | Work order number |
+| `order_type` | str / None | |
+| `order_start_date` | datetime / None | Lookback filter applied to this column |
+| `order_end_date` | datetime / None | |
+| `part_no` | str | |
+| `module_description` | str / None | |
+| `module_name` | str / None | Filter column |
+| `module_assy_level` | str / None | |
+| `program` | str / None | May contain embedded module name — clean at call site if needed |
+| `module_serial_num` | str / None | |
+| `dr_id` | str | Primary unique identifier for a DR |
+| `dr_title` | str / None | |
+| `dr_type` | str / None | |
+| `dr_defect_code` | str / None | |
+| `dr_notes` | str / None | |
+| `dr_text_timestamp` | datetime / None | |
+| `dr_text_1` | str / None | Free-text field |
+| `dr_text_2` | str / None | Free-text field |
+| `dr_text_3` | str / None | Free-text field |
+| `dr_text_4` | str / None | Free-text field |
+| `dr_text_5` | str / None | Free-text field |
+
+Date columns (`order_start_date`, `order_end_date`, `dr_text_timestamp`) are coerced to `pd.Timestamp` / `NaT` automatically.
+
+---
+
+## Query Behaviour
+
+- Lookback filter: `order_start_date >= SYSDATE - days_back`
+- Row cap: `FETCH FIRST n ROWS ONLY` applied at the database level — not in Python
+- Result ordering: `module_name, part_no, order_no, dr_id, dr_text_timestamp`
+- Multiple rows may share a `dr_id` — each represents a timestamped text entry for the same DR, consistent with how `wo_database.py` and the pipeline handle grouping
+
+---
+
+## File Location
+
+```
+project/
+└── oracle/
+    └── dr_lookup.py
+```
+
+---
+
+## Notes
+
+- `days_back` and `max_results` must both be >= 1 — a `ValueError` is raised otherwise
+- An empty DataFrame is returned (not an exception) when no rows match
+- Thin mode is used by default — no Oracle Client installation required
