@@ -1,0 +1,274 @@
+# DR Troubleshooting Pipeline — Audit Logging
+
+## Overview
+
+This document describes the per-session CSV audit logging implementation in
+`dr_troubleshooting_pipeline.py`. It is written as an implementation guide
+so that an agent can replicate this pattern in any Open WebUI Pipeline.
+
+---
+
+## Requirements
+
+- Every user prompt and LLM response from a troubleshooting session must be
+  captured to a CSV file for audit purposes.
+- Onboarding exchanges (module selection, part number selection) must NOT be
+  logged — only actual troubleshooting Q&A turns.
+- Each chat session must produce its own separate CSV file.
+- The log file must never crash or interrupt the pipeline if a write fails.
+
+---
+
+## Dependencies Added
+
+The following standard library imports are required. Add them to the top of
+the pipeline file alongside existing imports:
+
+```python
+import csv
+from datetime import datetime, timezone
+from pathlib import Path
+```
+
+No third-party packages are needed beyond what the pipeline already uses.
+
+---
+
+## Valve Added
+
+Add `LOG_FILE_PATH` to the `Valves` inner class inside `Pipeline`. This
+allows the admin to configure the log directory from the Open WebUI UI:
+
+```python
+class Valves(BaseModel):
+    # ... existing valves ...
+    LOG_FILE_PATH: str = "./dr_chat_logs/dr_chat_log.csv"
+```
+
+The parent directory of this path is used as the log directory. The filename
+portion is used as a naming template prefix only — actual filenames are
+generated per session (see below). The directory is created automatically on
+first write if it does not exist.
+
+---
+
+## Instance Variables Added
+
+Add the following to `__init__`:
+
+```python
+# Maps chat_id -> session start timestamp string
+# Ensures all turns in one chat go to the same file
+self._session_starts: dict[str, str] = {}
+```
+
+This can also be initialised lazily inside `outlet()` using `hasattr` if
+preferred (see outlet implementation below).
+
+---
+
+## Methods Added
+
+### `_get_session_log_path(chat_id, session_start) -> Path`
+
+Builds the file path for a session log file.
+
+```python
+def _get_session_log_path(self, chat_id: str, session_start: str) -> Path:
+    log_dir = Path(self.valves.LOG_FILE_PATH).parent
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe_id = re.sub(r"[^a-zA-Z0-9]", "", chat_id)[:8] or "unknown"
+    filename = f"dr_chat_log_{session_start}_{safe_id}.csv"
+    return log_dir / filename
+```
+
+Output filename format:
+```
+dr_chat_log_2026-04-30_143022_abc12345.csv
+```
+
+- `session_start` is a UTC timestamp string formatted as `%Y-%m-%d_%H%M%S`
+- `safe_id` is the first 8 alphanumeric characters of the `chat_id`
+
+---
+
+### `_write_log(...) -> None`
+
+Appends one row to the session CSV. Creates the file with a header row if
+it does not already exist. Uses `csv.QUOTE_ALL` to safely handle multi-line
+responses, embedded commas, and quotation marks.
+
+```python
+def _write_log(
+    self,
+    chat_id: str,
+    session_start: str,
+    user_id: str,
+    user_name: str,
+    module_name: str,
+    part_no: str,
+    user_message: str,
+    assistant_response: str,
+) -> None:
+    log_path = Path(self._get_session_log_path(chat_id, session_start))
+    write_header = not log_path.exists() or log_path.stat().st_size == 0
+
+    try:
+        with open(log_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+            if write_header:
+                writer.writerow([
+                    "timestamp",
+                    "chat_id",
+                    "user_id",
+                    "user_name",
+                    "module",
+                    "part_no",
+                    "user_message",
+                    "assistant_response",
+                ])
+            writer.writerow([
+                datetime.now(timezone.utc).isoformat(),
+                chat_id,
+                user_id,
+                user_name,
+                module_name or "",
+                part_no or "",
+                user_message,
+                assistant_response,
+            ])
+    except Exception as e:
+        print(f"[DR Pipeline] Log write failed: {e}")
+```
+
+Critical behaviour: the entire method is wrapped in try/except. A failed
+log write must never raise an exception or interrupt the pipeline.
+
+---
+
+## CSV Schema
+
+| Column               | Description                                              |
+|----------------------|----------------------------------------------------------|
+| `timestamp`          | UTC ISO 8601 timestamp of the log write                  |
+| `chat_id`            | Open WebUI chat/session identifier                       |
+| `user_id`            | Open WebUI user ID from the `user` dict                  |
+| `user_name`          | Open WebUI display name from the `user` dict             |
+| `module`             | Module name extracted from session context               |
+| `part_no`            | Part number extracted from session context               |
+| `user_message`       | The technician's question (last user message in history) |
+| `assistant_response` | The full LLM response (last assistant message in history)|
+
+---
+
+## Outlet Method
+
+Open WebUI calls `outlet()` automatically after each complete response is
+delivered to the user. This is the correct hook for logging because the
+full assistant response is available (streaming is complete).
+
+```python
+async def outlet(self, body: dict, user: Optional[dict] = None) -> dict:
+    try:
+        messages = body.get("messages", [])
+
+        # Extract last user message
+        user_message = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                user_message = msg.get("content", "")
+                break
+
+        # Extract last assistant message
+        assistant_response = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                assistant_response = msg.get("content", "")
+                break
+
+        # Skip onboarding turns -- only log once SESSION READY is in history
+        full_history = "\n".join(
+            m.get("content", "") for m in messages
+            if m.get("role") == "assistant"
+        )
+        if "SESSION READY" not in full_history:
+            return body
+
+        # Extract session context (module and part) from conversation history
+        module_name, part_no = self._extract_session_context(messages)
+
+        # User identity
+        user_id   = (user or {}).get("id",   "unknown")
+        user_name = (user or {}).get("name", "unknown")
+
+        # Chat identity -- try common body keys Open WebUI may provide
+        chat_id = body.get("chat_id") or body.get("id") or "unknown"
+
+        # Stable session start timestamp -- cached per chat_id so all turns
+        # in the same conversation write to the same file
+        session_start = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+        if not hasattr(self, "_session_starts"):
+            self._session_starts = {}
+        if chat_id not in self._session_starts:
+            self._session_starts[chat_id] = session_start
+        session_start = self._session_starts[chat_id]
+
+        self._write_log(
+            chat_id=chat_id,
+            session_start=session_start,
+            user_id=user_id,
+            user_name=user_name,
+            module_name=module_name,
+            part_no=part_no,
+            user_message=user_message,
+            assistant_response=assistant_response,
+        )
+
+    except Exception as e:
+        print(f"[DR Pipeline] outlet error: {e}")
+
+    return body
+```
+
+`outlet()` must always return `body` unchanged. Never raise from this method.
+
+---
+
+## Session Filtering Logic
+
+The `if "SESSION READY" not in full_history` guard is specific to this
+pipeline's onboarding state machine. It prevents module selection and part
+number selection exchanges from being written to the audit log.
+
+**To adapt this for a pipeline without an onboarding flow:** remove the
+guard entirely and log every assistant response.
+
+**To adapt this for a different onboarding marker:** replace `"SESSION READY"`
+with whatever string your pipeline embeds in the conversation to signal that
+the session is fully initialised.
+
+---
+
+## File Output
+
+Log files are written to the parent directory of `LOG_FILE_PATH`. Example
+output for two turns in one session:
+
+```
+"timestamp","chat_id","user_id","user_name","module","part_no","user_message","assistant_response"
+"2026-04-30T14:30:22.123456+00:00","abc12345xyz","user_001","J. Smith","WING_SPAR","12345-001","Crack near fastener row B, ~0.5 inches. What have we seen?","Based on retrieved DR history, DR-00412 describes a similar crack..."
+"2026-04-30T14:31:05.654321+00:00","abc12345xyz","user_001","J. Smith","WING_SPAR","12345-001","What was the resolution on DR-00412?","DR-00412 was dispositioned via rework — the affected area was..."
+```
+
+---
+
+## Notes for Implementation
+
+- `outlet()` must be `async def` in Open WebUI v0.8+.
+- `inlet()` does not need to be modified for logging.
+- `pipe()` does not need to be modified for logging.
+- The `_session_starts` dict grows indefinitely for the lifetime of the
+  pipeline server process. This is acceptable for typical usage volumes.
+  If memory is a concern, add a max-size eviction policy.
+- Log files accumulate in the log directory indefinitely. Implement an
+  external archival or rotation policy as needed for long-term operation.
